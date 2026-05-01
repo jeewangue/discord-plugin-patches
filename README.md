@@ -87,6 +87,19 @@ clean error.
 { "chat_id": "...", "message_id": "...", "action": "pin" }
 ```
 
+### `delete_message` — retract a bot message
+
+Counterpart to `edit_message` for the case where shrinking is the right
+move (interim "starting…" line after the final result has landed; an
+obsolete progress update inside a running TODO summary). Refuses to
+delete messages authored by anyone other than the bot itself, so the
+tool can never be used to remove user content even if the bot holds
+`ManageMessages`.
+
+```jsonc
+{ "chat_id": "...", "message_id": "..." }
+```
+
 ### `todo_anchor_set` / `todo_anchor_get` / `todo_anchor_clear` — living thread anchors
 
 The right tool for a "Todo / Followups", status board, or rolling summary

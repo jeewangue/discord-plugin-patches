@@ -503,7 +503,7 @@ const mcp = new Server(
       '',
       'Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. If the tag has attachment_count, the attachments attribute lists name/type/size — call download_attachment(chat_id, message_id) to fetch them. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.',
       '',
-      'reply auto-splits long text at the configured chunk limit (default 2000 = Discord\'s hard cap) so markdown never gets truncated mid-message. With chunkMode="newline" (recommended for any reply with bullet lists, code fences, or multi-section markdown) the splitter is paragraph-aware AND code-block-aware: a fenced ``` block straddling the boundary is auto-closed on the current chunk and reopened with the same language tag on the next. reply also accepts file paths (files: ["/abs/path.png"]) for attachments. Use react for emoji reactions, edit_message for interim progress updates. Edits don\'t trigger push notifications — when a long task completes, send a new reply so the user\'s device pings.',
+      'reply auto-splits long text at the configured chunk limit (default 2000 = Discord\'s hard cap) so markdown never gets truncated mid-message. With chunkMode="newline" (recommended for any reply with bullet lists, code fences, or multi-section markdown) the splitter is paragraph-aware AND code-block-aware: a fenced ``` block straddling the boundary is auto-closed on the current chunk and reopened with the same language tag on the next. reply also accepts file paths (files: ["/abs/path.png"]) for attachments. Use react for emoji reactions, edit_message for interim progress updates, delete_message to retract a bot message that\'s no longer relevant (e.g. an interim "starting…" line after the final result has landed). Edits don\'t trigger push notifications — when a long task completes, send a new reply so the user\'s device pings.',
       '',
       'Discord does NOT render markdown tables — `| col1 | col2 |` shows up as literal pipes, not a table. For tabular data, prefer bullet lists with bold field labels (e.g., `- **alpha** — owner: foo, status: green`) or, when alignment matters, a fenced code block with ASCII columns. For two-column key/value pairs, plain `**Key**: value` lines on their own row are the cleanest.',
       '',
@@ -619,6 +619,18 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string' },
         },
         required: ['chat_id', 'message_id', 'text'],
+      },
+    },
+    {
+      name: 'delete_message',
+      description: 'Delete a message the bot previously sent. Use to retract obsolete progress updates or clean up a running todo/status report — paired with edit_message when the running summary needs to shrink instead of just be amended. Refuses to delete messages from any author other than the bot itself; deletion is permanent and unannounced (no push notification, no edit history).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string' },
+          message_id: { type: 'string' },
+        },
+        required: ['chat_id', 'message_id'],
       },
     },
     {
@@ -957,6 +969,24 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const msg = await ch.messages.fetch(args.message_id as string)
         const edited = await msg.edit(args.text as string)
         return { content: [{ type: 'text', text: `edited (id: ${edited.id})` }] }
+      }
+      case 'delete_message': {
+        const ch = await fetchAllowedChannel(args.chat_id as string)
+        const message_id = args.message_id as string
+        const msg = await ch.messages.fetch(message_id)
+        // Refuse non-bot messages explicitly so the agent gets a clear error
+        // instead of a Discord 50013 (Missing Permissions) when ManageMessages
+        // isn't granted, and so we never silently delete user content if the
+        // perm IS granted. The user-stated need ("delete my own todo updates")
+        // never crosses this fence.
+        const me = client.user?.id
+        if (!me || msg.author.id !== me) {
+          throw new Error(
+            `delete_message refuses to delete a non-bot message (author=${msg.author.id}, message=${message_id})`,
+          )
+        }
+        await msg.delete()
+        return { content: [{ type: 'text', text: `deleted (id: ${message_id})` }] }
       }
       case 'download_attachment': {
         const ch = await fetchAllowedChannel(args.chat_id as string)
