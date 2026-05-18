@@ -187,10 +187,34 @@ messages, or a thread ID for thread-only history — the two scopes are
 disjoint (a thread is its own message list, not a subset of the parent
 channel).
 
+### Inbound notification: reply / forward context
+
+When a user uses Discord's *reply* feature (or *forward*), the inbound
+`<channel …>` tag delivered to the MCP client now carries enough metadata
+that the model can answer a bare "yes" or "do it" coherently — the body
+in isolation is opaque, but combined with the referenced message it lands.
+
+Fields surfaced on the inbound:
+
+- `reply_to_message_id` — always set when the message is a reply / forward.
+- `reply_to_user` / `reply_to_user_id` — author of the referenced message.
+- `reply_to_preview` — single-line, ≤200-char preview of the referenced
+  message body (newlines collapsed to a visible ⏎, control chars stripped,
+  surrogate-pair safe).
+- `reply_to_attachment_count` — attachment count of the referenced message
+  (only emitted when > 0).
+- `reply_to_channel_id` — only emitted on cross-channel forwards.
+- `reply_to_unavailable="true"` — referenced message was deleted or
+  unreachable; you have the ID but not the content.
+
+Fetch is best-effort: a deleted reference or missing perms still emits
+the ID with `reply_to_unavailable=true` so the model isn't blind to the
+fact that this *was* a reply.
+
 ## Tests + CI
 
 ```bash
-make test           # bun test lib/ (47 tests)
+make test           # bun test lib/ (69 tests)
 make build          # bun build → dist/server.bundle.js (sanity check)
 make verify-apply   # clean-room smoke: apply into mktemp, assert imports resolve
 make check-drift    # diff deploy-manifest files against the install

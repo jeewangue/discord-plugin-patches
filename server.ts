@@ -90,6 +90,7 @@ import {
   type ChannelLike,
   type SectionInput,
 } from './lib/anchor-runner.ts'
+import { formatReplyContext, type ReplyRef } from './lib/reply-context.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'discord')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
@@ -501,7 +502,7 @@ const mcp = new Server(
     instructions: [
       'The sender reads Discord, not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches their chat.',
       '',
-      'Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. If the tag has attachment_count, the attachments attribute lists name/type/size — call download_attachment(chat_id, message_id) to fetch them. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.',
+      'Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. If the tag has attachment_count, the attachments attribute lists name/type/size — call download_attachment(chat_id, message_id) to fetch them. If the tag carries reply_to_message_id, the user used Discord\'s reply feature to respond to an earlier message — read reply_to_user / reply_to_preview to understand what they\'re replying to (often the reply body alone is a one-word "yes" / "do it" that only makes sense in context). reply_to_channel_id appears only on cross-channel forwards. reply_to_unavailable="true" means the referenced message was deleted or unreachable; you have the ID but not the content. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.',
       '',
       'reply auto-splits long text at the configured chunk limit (default 2000 = Discord\'s hard cap) so markdown never gets truncated mid-message. With chunkMode="newline" (recommended for any reply with bullet lists, code fences, or multi-section markdown) the splitter is paragraph-aware AND code-block-aware: a fenced ``` block straddling the boundary is auto-closed on the current chunk and reopened with the same language tag on the next. reply also accepts file paths (files: ["/abs/path.png"]) for attachments. Use react for emoji reactions, edit_message for interim progress updates, delete_message to retract a bot message that\'s no longer relevant (e.g. an interim "starting…" line after the final result has landed). Edits don\'t trigger push notifications — when a long task completes, send a new reply so the user\'s device pings.',
       '',
@@ -1584,6 +1585,13 @@ async function handleInbound(msg: Message): Promise<void> {
     atts.push(`${safeAttName(att)} (${att.contentType ?? 'unknown'}, ${kb}KB)`)
   }
 
+  // Reply context — when the inbound is a Discord reply (or forward), surface
+  // who/what the user was responding to. Without this the model only sees the
+  // reply body, which is often a one-word "yes" / "do it" that doesn't make
+  // sense in isolation. Fetch is best-effort: a deleted reference or missing
+  // perms still emits the reply_to_message_id, marked unavailable.
+  const replyMeta = await buildReplyMeta(msg)
+
   // Attachment listing goes in meta only — an in-content annotation is
   // forgeable by any allowlisted sender typing that string.
   const content = msg.content || (atts.length > 0 ? '(attachment)' : '')
@@ -1598,12 +1606,49 @@ async function handleInbound(msg: Message): Promise<void> {
         user: msg.author.username,
         user_id: msg.author.id,
         ts: msg.createdAt.toISOString(),
+        ...replyMeta,
         ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
       },
     },
   }).catch(err => {
     process.stderr.write(`discord channel: failed to deliver inbound to Claude: ${err}\n`)
   })
+}
+
+/**
+ * Resolve `Message.reference` into a `ReplyMeta` slice. Best-effort:
+ * - No reference at all → `{}`.
+ * - Reference present but `fetchReference()` throws (deleted message, missing
+ *   `Read Message History` on the referenced channel, cross-channel without
+ *   perms) → emit `reply_to_message_id` + `reply_to_unavailable=true` so the
+ *   model knows the reply was a reply, even if blind.
+ * - Success → full preview with author + content + attachment count.
+ */
+async function buildReplyMeta(msg: Message): Promise<Record<string, string>> {
+  const refId = msg.reference?.messageId
+  if (!refId) return {}
+  const refChannelId = msg.reference?.channelId
+  const currentChannelId = msg.channelId
+  let ref: ReplyRef
+  try {
+    const fetched = await msg.fetchReference()
+    ref = {
+      messageId: refId,
+      channelId: refChannelId,
+      currentChannelId,
+      author: { id: fetched.author.id, username: fetched.author.username },
+      content: fetched.content,
+      attachmentCount: fetched.attachments.size,
+    }
+  } catch {
+    ref = {
+      messageId: refId,
+      channelId: refChannelId,
+      currentChannelId,
+      fetchFailed: true,
+    }
+  }
+  return formatReplyContext(ref)
 }
 
 client.once('ready', c => {
